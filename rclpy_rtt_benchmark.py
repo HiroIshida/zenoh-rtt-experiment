@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ROS 2 rclpy RTT Benchmark Script
+ROS 2 rclpy RTT Benchmark Script (Fair Version)
 
 This script measures the Round-Trip Time (RTT) of ROS 2 rclpy using a ping-pong mechanism
-with a NumPy array of 30 float64 elements as payload, encoded as base64 string.
+with a NumPy array of 30 float64 elements as payload, using standard Float64MultiArray.
 
 Usage: uv run rclpy_rtt_benchmark.py
 """
@@ -13,14 +13,12 @@ import threading
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Float64MultiArray
 from typing import List
 import statistics
-import base64
-
 
 class RclpyRTTBenchmark(Node):
-    """RTT benchmark for ROS 2 rclpy with NumPy array payload using base64 encoding."""
+    """RTT benchmark for ROS 2 rclpy with NumPy array payload using Float64MultiArray."""
 
     def __init__(self, iterations: int = 1000):
         super().__init__('rclpy_rtt_benchmark')
@@ -53,14 +51,14 @@ class RclpyRTTBenchmark(Node):
         """Initialize ROS 2 publishers and subscribers."""
         # Create publisher for ping messages
         self.ping_publisher = self.create_publisher(
-            String,
+            Float64MultiArray,
             self.ping_topic,
             10
         )
 
         # Create subscriber for pong responses
         self.pong_subscriber = self.create_subscription(
-            String,
+            Float64MultiArray,
             self.pong_topic,
             self.on_pong_received,
             10
@@ -68,14 +66,14 @@ class RclpyRTTBenchmark(Node):
 
         # Create echo service (subscriber + publisher)
         self.echo_subscriber = self.create_subscription(
-            String,
+            Float64MultiArray,
             self.ping_topic,
             self.echo_handler,
             10
         )
 
         self.echo_publisher = self.create_publisher(
-            String,
+            Float64MultiArray,
             self.pong_topic,
             10
         )
@@ -83,37 +81,30 @@ class RclpyRTTBenchmark(Node):
         # Small delay to ensure everything is ready
         time.sleep(0.5)
 
-    def numpy_to_msg(self, array: np.ndarray) -> String:
-        """Convert NumPy array to ROS 2 String message with base64 encoding."""
+    def numpy_to_msg(self, array: np.ndarray) -> Float64MultiArray:
+        """Convert NumPy array to ROS 2 Float64MultiArray message."""
         encode_start = time.perf_counter()
 
-        # Convert NumPy array to bytes, then to base64 string
-        array_bytes = array.tobytes()
-        base64_bytes = base64.b64encode(array_bytes)
-        base64_str = base64_bytes.decode('utf-8')
+        msg = Float64MultiArray()
+        msg.data = array.tolist()
 
         encode_end = time.perf_counter()
         self.encoding_times.append((encode_end - encode_start) * 1_000_000)  # microseconds
 
-        msg = String()
-        msg.data = base64_str
         return msg
 
-    def msg_to_numpy(self, msg: String) -> np.ndarray:
-        """Convert ROS 2 String message with base64 to NumPy array."""
+    def msg_to_numpy(self, msg: Float64MultiArray) -> np.ndarray:
+        """Convert ROS 2 Float64MultiArray message to NumPy array."""
         decode_start = time.perf_counter()
 
-        # Decode base64 string back to bytes, then to NumPy array
-        base64_bytes = msg.data.encode('utf-8')
-        array_bytes = base64.b64decode(base64_bytes)
-        array = np.frombuffer(array_bytes, dtype=np.float64)
+        array = np.array(msg.data, dtype=np.float64)
 
         decode_end = time.perf_counter()
         self.decoding_times.append((decode_end - decode_start) * 1_000_000)  # microseconds
 
         return array
 
-    def on_pong_received(self, msg: String):
+    def on_pong_received(self, msg: Float64MultiArray):
         """Handler for pong responses."""
         try:
             # Deserialize the received data back to NumPy array
@@ -126,7 +117,7 @@ class RclpyRTTBenchmark(Node):
         except Exception as e:
             self.get_logger().error(f"Error processing pong: {e}")
 
-    def echo_handler(self, msg: String):
+    def echo_handler(self, msg: Float64MultiArray):
         """Echo handler that responds to ping messages."""
         try:
             # Echo back the same data on pong topic
@@ -136,9 +127,9 @@ class RclpyRTTBenchmark(Node):
 
     def run_benchmark(self):
         """Execute the RTT benchmark."""
-        print("Starting ROS 2 rclpy RTT Benchmark")
+        print("Starting ROS 2 rclpy RTT Benchmark (Fair Version)")
         print(f"Payload: NumPy array of {len(self.test_array)} float64 elements ({self.test_array.nbytes} bytes)")
-        print(f"Encoding: Base64 string message")
+        print(f"Encoding: Standard Float64MultiArray (No Base64 overhead)")
         print(f"Iterations: {self.iterations}")
         print("=" * 50)
 
@@ -170,6 +161,8 @@ class RclpyRTTBenchmark(Node):
 
             while not self.response_received.is_set():
                 # Process ROS 2 callbacks
+                # Note: spin_once adds some overhead compared to multi-threaded executor,
+                # but kept here to match original structure.
                 rclpy.spin_once(self, timeout_sec=0.01)
 
                 # Check timeout
@@ -218,9 +211,9 @@ class RclpyRTTBenchmark(Node):
 
         print("=" * 50)
 
-        # Display base64 encoding/decoding statistics
+        # Display encoding/decoding statistics
         if self.encoding_times:
-            print("\nBASE64 ENCODING/DECODING STATISTICS")
+            print("\nDATA CONVERSION STATISTICS (List <-> NumPy)")
             print("=" * 50)
 
             # Encoding statistics
@@ -229,7 +222,7 @@ class RclpyRTTBenchmark(Node):
             avg_encode = statistics.mean(self.encoding_times)
             median_encode = statistics.median(self.encoding_times)
 
-            print("Encoding Time (NumPy array -> base64 string):")
+            print("Conversion Time (NumPy array -> Float64MultiArray):")
             print(f"  Minimum: {min_encode:.2f} μs")
             print(f"  Maximum: {max_encode:.2f} μs")
             print(f"  Average: {avg_encode:.2f} μs")
@@ -246,7 +239,7 @@ class RclpyRTTBenchmark(Node):
                 avg_decode = statistics.mean(self.decoding_times)
                 median_decode = statistics.median(self.decoding_times)
 
-                print("\nDecoding Time (base64 string -> NumPy array):")
+                print("\nConversion Time (Float64MultiArray -> NumPy array):")
                 print(f"  Minimum: {min_decode:.2f} μs")
                 print(f"  Maximum: {max_decode:.2f} μs")
                 print(f"  Average: {avg_decode:.2f} μs")
@@ -258,7 +251,7 @@ class RclpyRTTBenchmark(Node):
 
                 # Total encoding + decoding overhead
                 total_encode_decode = avg_encode + avg_decode
-                print(f"\nTotal Average Encoding+Decoding Overhead: {total_encode_decode:.2f} μs")
+                print(f"\nTotal Average Conversion Overhead: {total_encode_decode:.2f} μs")
 
             print("=" * 50)
 
