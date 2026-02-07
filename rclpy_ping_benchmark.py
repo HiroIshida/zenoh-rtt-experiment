@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-ROS 2 rclpy RTT Benchmark Script (Fair Version)
+ROS 2 rclpy RTT Benchmark Script - Publisher Side
 
 This script measures the Round-Trip Time (RTT) of ROS 2 rclpy using a ping-pong mechanism
 with a NumPy array of 30 float64 elements as payload, using standard Float64MultiArray.
 
-Usage: uv run rclpy_rtt_benchmark.py
+This is the PUBLISHER side that sends ping messages and measures RTT.
+Run rclpy_pong_responder.py in a separate process for true IPC testing.
+
+Usage: uv run rclpy_ping_benchmark.py
 """
 
 import time
@@ -17,11 +20,12 @@ from std_msgs.msg import Float64MultiArray
 from typing import List
 import statistics
 
-class RclpyRTTBenchmark(Node):
-    """RTT benchmark for ROS 2 rclpy with NumPy array payload using Float64MultiArray."""
+
+class RclpyPingBenchmark(Node):
+    """RTT benchmark publisher for ROS 2 rclpy with NumPy array payload using Float64MultiArray."""
 
     def __init__(self, iterations: int = 1000):
-        super().__init__('rclpy_rtt_benchmark')
+        super().__init__('rclpy_ping_benchmark')
         self.iterations = iterations
         self.rtt_times: List[float] = []
         self.encoding_times: List[float] = []
@@ -29,7 +33,6 @@ class RclpyRTTBenchmark(Node):
 
         # Synchronization primitives
         self.response_received = threading.Event()
-        self.benchmark_complete = threading.Event()
 
         # Ping-pong topics
         self.ping_topic = "benchmark/ping"
@@ -41,11 +44,6 @@ class RclpyRTTBenchmark(Node):
         # ROS 2 publishers and subscribers
         self.ping_publisher = None
         self.pong_subscriber = None
-        self.echo_subscriber = None
-        self.echo_publisher = None
-
-        # Current iteration tracking
-        self.current_iteration = 0
 
     def setup_ros2(self):
         """Initialize ROS 2 publishers and subscribers."""
@@ -61,20 +59,6 @@ class RclpyRTTBenchmark(Node):
             Float64MultiArray,
             self.pong_topic,
             self.on_pong_received,
-            10
-        )
-
-        # Create echo service (subscriber + publisher)
-        self.echo_subscriber = self.create_subscription(
-            Float64MultiArray,
-            self.ping_topic,
-            self.echo_handler,
-            10
-        )
-
-        self.echo_publisher = self.create_publisher(
-            Float64MultiArray,
-            self.pong_topic,
             10
         )
 
@@ -117,21 +101,14 @@ class RclpyRTTBenchmark(Node):
         except Exception as e:
             self.get_logger().error(f"Error processing pong: {e}")
 
-    def echo_handler(self, msg: Float64MultiArray):
-        """Echo handler that responds to ping messages."""
-        try:
-            # Echo back the same data on pong topic
-            self.echo_publisher.publish(msg)
-        except Exception as e:
-            self.get_logger().error(f"Error in echo handler: {e}")
-
     def run_benchmark(self):
         """Execute the RTT benchmark."""
-        print("Starting ROS 2 rclpy RTT Benchmark (Fair Version)")
+        print("Starting ROS 2 rclpy RTT Benchmark - Publisher Side")
+        print("NOTE: Make sure to run rclpy_pong_responder.py in a separate process!")
         print(f"Payload: NumPy array of {len(self.test_array)} float64 elements ({self.test_array.nbytes} bytes)")
         print(f"Encoding: Standard Float64MultiArray (No Base64 overhead)")
         print(f"Iterations: {self.iterations}")
-        print("=" * 50)
+        print("=" * 70)
 
         # Setup ROS 2
         self.setup_ros2()
@@ -143,8 +120,11 @@ class RclpyRTTBenchmark(Node):
         test_msg = self.numpy_to_msg(self.test_array)
 
         print("Running benchmark...")
+        print("Waiting for responder to be ready...")
+        time.sleep(2.0)  # Give responder time to start
 
         # Run benchmark iterations
+        successful_count = 0
         for i in range(self.iterations):
             # Clear the response received event
             self.response_received.clear()
@@ -157,18 +137,20 @@ class RclpyRTTBenchmark(Node):
 
             # Spin to process callbacks while waiting for response
             timeout_start = time.time()
-            timeout_duration = 5.0
+            timeout_duration = 10.0
 
             while not self.response_received.is_set():
                 # Process ROS 2 callbacks
-                # Note: spin_once adds some overhead compared to multi-threaded executor,
-                # but kept here to match original structure.
                 rclpy.spin_once(self, timeout_sec=0.01)
 
                 # Check timeout
                 if time.time() - timeout_start > timeout_duration:
-                    print(f"Timeout on iteration {i + 1}")
-                    break
+                    print(f"Timeout on iteration {i + 1} - is the responder running?")
+                    if i < 10:  # Only continue if we're in the first few iterations
+                        break
+                    else:
+                        print("Too many timeouts, stopping benchmark")
+                        return
             else:
                 # Response received within timeout
                 end_time = time.perf_counter()
@@ -176,45 +158,46 @@ class RclpyRTTBenchmark(Node):
                 # Calculate RTT in microseconds
                 rtt_microseconds = (end_time - start_time) * 1_000_000
                 self.rtt_times.append(rtt_microseconds)
+                successful_count += 1
 
                 # Progress indicator
                 if (i + 1) % 100 == 0:
                     print(f"Completed {i + 1}/{self.iterations} iterations")
 
         # Calculate and display results
-        self.display_results()
+        self.display_results(successful_count)
 
-    def display_results(self):
+    def display_results(self, successful_count):
         """Calculate and display benchmark results."""
         if not self.rtt_times:
             print("No successful RTT measurements recorded!")
+            print("Make sure rclpy_pong_responder.py is running in a separate process.")
             return
 
-        successful_iterations = len(self.rtt_times)
         min_rtt = min(self.rtt_times)
         max_rtt = max(self.rtt_times)
         avg_rtt = statistics.mean(self.rtt_times)
         median_rtt = statistics.median(self.rtt_times)
 
-        print("\n" + "=" * 50)
-        print("BENCHMARK RESULTS")
-        print("=" * 50)
-        print(f"Successful iterations: {successful_iterations}/{self.iterations}")
+        print("\n" + "=" * 70)
+        print("ROS 2 IPC BENCHMARK RESULTS (Publisher Side)")
+        print("=" * 70)
+        print(f"Successful iterations: {successful_count}/{self.iterations}")
         print(f"Minimum RTT: {min_rtt:.2f} μs")
         print(f"Maximum RTT: {max_rtt:.2f} μs")
         print(f"Average RTT: {avg_rtt:.2f} μs")
         print(f"Median RTT: {median_rtt:.2f} μs")
 
-        if successful_iterations > 1:
+        if len(self.rtt_times) > 1:
             std_dev = statistics.stdev(self.rtt_times)
             print(f"Standard Deviation: {std_dev:.2f} μs")
 
-        print("=" * 50)
+        print("=" * 70)
 
         # Display encoding/decoding statistics
         if self.encoding_times:
             print("\nDATA CONVERSION STATISTICS (List <-> NumPy)")
-            print("=" * 50)
+            print("=" * 70)
 
             # Encoding statistics
             min_encode = min(self.encoding_times)
@@ -253,7 +236,7 @@ class RclpyRTTBenchmark(Node):
                 total_encode_decode = avg_encode + avg_decode
                 print(f"\nTotal Average Conversion Overhead: {total_encode_decode:.2f} μs")
 
-            print("=" * 50)
+            print("=" * 70)
 
 
 def main():
@@ -261,7 +244,7 @@ def main():
     rclpy.init()
 
     try:
-        benchmark = RclpyRTTBenchmark(iterations=1000)
+        benchmark = RclpyPingBenchmark(iterations=1000)
         benchmark.run_benchmark()
     except KeyboardInterrupt:
         print("\nBenchmark interrupted by user")

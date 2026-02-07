@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Zenoh Python RTT Benchmark Script
+Zenoh Python RTT Benchmark Script - Publisher Side
 
 This script measures the Round-Trip Time (RTT) of zenoh-python using a ping-pong mechanism
 with a NumPy array of 30 float64 elements as payload.
 
-Usage: uv run zenoh_rtt_benchmark.py
+This is the PUBLISHER side that sends ping messages and measures RTT.
+Run zenoh_pong_responder.py in a separate process for true IPC testing.
+
+Usage: uv run zenoh_ping_benchmark.py
 """
 
 import time
@@ -16,8 +19,8 @@ from typing import List
 import statistics
 
 
-class ZenohRTTBenchmark:
-    """RTT benchmark for Zenoh with NumPy array payload."""
+class ZenohPingBenchmark:
+    """RTT benchmark publisher for Zenoh with NumPy array payload."""
 
     def __init__(self, iterations: int = 1000):
         self.iterations = iterations
@@ -28,7 +31,6 @@ class ZenohRTTBenchmark:
 
         # Synchronization primitives
         self.response_received = threading.Event()
-        self.benchmark_complete = threading.Event()
 
         # Ping-pong topics
         self.ping_topic = "benchmark/ping"
@@ -68,41 +70,29 @@ class ZenohRTTBenchmark:
         except Exception as e:
             print(f"Error processing pong: {e}")
 
-    def setup_echo_service(self):
-        """Set up echo service that responds to ping messages."""
-        def echo_handler(sample):
-            try:
-                # Echo back the same data on pong topic
-                self.session.put(self.pong_topic, sample.payload)
-            except Exception as e:
-                print(f"Error in echo handler: {e}")
-
-        # Subscribe to ping topic for echo responses
-        echo_subscriber = self.session.declare_subscriber(self.ping_topic, echo_handler)
-        return echo_subscriber
-
     def run_benchmark(self):
         """Execute the RTT benchmark."""
-        print("Starting Zenoh RTT Benchmark")
+        print("Starting Zenoh RTT Benchmark - Publisher Side")
+        print("NOTE: Make sure to run zenoh_pong_responder.py in a separate process!")
         print(f"Payload: NumPy array of {len(self.test_array)} float64 elements ({self.test_array.nbytes} bytes)")
         print(f"Iterations: {self.iterations}")
-        print("=" * 50)
+        print("=" * 60)
 
         # Setup Zenoh
         self.setup_zenoh()
 
-        # Setup echo service
-        echo_sub = self.setup_echo_service()
-
         # Allow time for everything to initialize
-        time.sleep(0.5)
+        time.sleep(1.0)
 
         # Convert test array to bytes for efficient transmission
         payload_bytes = self.test_array.tobytes()
 
         print("Running benchmark...")
+        print("Waiting for responder to be ready...")
+        time.sleep(2.0)  # Give responder time to start
 
         # Run benchmark iterations
+        successful_count = 0
         for i in range(self.iterations):
             # Clear the response received event
             self.response_received.clear()
@@ -114,62 +104,66 @@ class ZenohRTTBenchmark:
             self.publisher.put(payload_bytes)
 
             # Wait for pong response with timeout
-            if self.response_received.wait(timeout=5.0):
+            if self.response_received.wait(timeout=10.0):
                 # Record end time
                 end_time = time.perf_counter()
 
                 # Calculate RTT in microseconds
                 rtt_microseconds = (end_time - start_time) * 1_000_000
                 self.rtt_times.append(rtt_microseconds)
+                successful_count += 1
 
                 # Progress indicator
                 if (i + 1) % 100 == 0:
                     print(f"Completed {i + 1}/{self.iterations} iterations")
             else:
-                print(f"Timeout on iteration {i + 1}")
-                break
+                print(f"Timeout on iteration {i + 1} - is the responder running?")
+                if i < 10:  # Only continue if we're in the first few iterations
+                    continue
+                else:
+                    print("Too many timeouts, stopping benchmark")
+                    break
 
         # Cleanup
-        echo_sub.undeclare()
         self.subscriber.undeclare()
         self.publisher.undeclare()
         self.session.close()
 
         # Calculate and display results
-        self.display_results()
+        self.display_results(successful_count)
 
-    def display_results(self):
+    def display_results(self, successful_count):
         """Calculate and display benchmark results."""
         if not self.rtt_times:
             print("No successful RTT measurements recorded!")
+            print("Make sure zenoh_pong_responder.py is running in a separate process.")
             return
 
-        successful_iterations = len(self.rtt_times)
         min_rtt = min(self.rtt_times)
         max_rtt = max(self.rtt_times)
         avg_rtt = statistics.mean(self.rtt_times)
         median_rtt = statistics.median(self.rtt_times)
 
-        print("\n" + "=" * 50)
-        print("BENCHMARK RESULTS")
-        print("=" * 50)
-        print(f"Successful iterations: {successful_iterations}/{self.iterations}")
+        print("\n" + "=" * 60)
+        print("ZENOH IPC BENCHMARK RESULTS (Publisher Side)")
+        print("=" * 60)
+        print(f"Successful iterations: {successful_count}/{self.iterations}")
         print(f"Minimum RTT: {min_rtt:.2f} μs")
         print(f"Maximum RTT: {max_rtt:.2f} μs")
         print(f"Average RTT: {avg_rtt:.2f} μs")
         print(f"Median RTT: {median_rtt:.2f} μs")
 
-        if successful_iterations > 1:
+        if len(self.rtt_times) > 1:
             std_dev = statistics.stdev(self.rtt_times)
             print(f"Standard Deviation: {std_dev:.2f} μs")
 
-        print("=" * 50)
+        print("=" * 60)
 
 
 def main():
     """Main entry point for the benchmark."""
     try:
-        benchmark = ZenohRTTBenchmark(iterations=1000)
+        benchmark = ZenohPingBenchmark(iterations=1000)
         benchmark.run_benchmark()
     except KeyboardInterrupt:
         print("\nBenchmark interrupted by user")
